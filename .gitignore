@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-agent/
+.env
+coverage/
+*.tsbuildinfo
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.auto.tfvars
+terraform.tfvars

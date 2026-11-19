@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+cd /input
+find app -type f | cpio -o -H newc | gzip > /tmp/app.cpio.gz
+cat /opt/konoha/guest.cpio.gz /tmp/app.cpio.gz > /tmp/initramfs
+socat UNIX-LISTEN:/bridge/http.sock,fork,mode=0600 TCP:127.0.0.1:8080 &
+proxy=$!
+trap 'kill "$proxy" 2>/dev/null || true' EXIT
+timeout -k 5 1800 qemu-system-x86_64 \
+  -accel tcg -m 384M -smp 1 -nographic -no-reboot -nodefaults -serial stdio \
+  -kernel /opt/konoha/kernel -initrd /tmp/initramfs \
+  -append 'console=ttyS0 rdinit=/init rootfstype=ramfs panic=1 quiet' \
+  -netdev 'user,id=app,restrict=on,hostfwd=tcp:127.0.0.1:8080-10.0.2.15:8080' \
+  -device virtio-net-pci,netdev=app

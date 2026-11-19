@@ -1,0 +1,36 @@
+{
+  "name": "konoha",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:server": "node --watch src/server/index.ts",
+    "build": "tsc -b && vite build",
+    "build:agent": "esbuild src/agent/index.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist-agent/deployment/index.js && node -e \"require('node:fs').writeFileSync('dist-agent/deployment/package.json', '{\\\"type\\\":\\\"commonjs\\\"}\\n')\"",
+    "test": "node --test 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-agentcore": "^3.1172.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1172.0",
+    "@hono/node-server": "^2.1.9",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "hono": "^4.13.19",
+    "parse5": "^8.1.1",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}

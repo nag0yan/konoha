@@ -1,0 +1,7 @@
+[tools]
+node = "26.13.1"
+aws-cli = "2.41.1"
+docker-cli = "29.10.0"
+docker-compose = "5.8.0"
+terraform = "1.17.2"
+gitleaks = "8.30.1"

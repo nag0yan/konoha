@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+mount -t devtmpfs devtmpfs /dev
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+modprobe virtio_pci
+modprobe virtio_net
+ip link set lo up
+ip link set eth0 up
+ip addr add 10.0.2.15/24 dev eth0
+cd /app
+export PORT=8080 HOST=0.0.0.0 HOME=/tmp
+exec su nobody -s /bin/sh -c 'exec /usr/local/bin/node server.mjs'

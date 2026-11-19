@@ -1,0 +1,18 @@
+services:
+  db:
+    image: postgres:18.7
+    environment:
+      POSTGRES_DB: konoha
+      POSTGRES_USER: konoha
+      POSTGRES_PASSWORD: local-development-only
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - konoha-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U konoha -d konoha"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+volumes:
+  konoha-db:
