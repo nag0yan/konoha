@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAgentApp } from "./app.ts";
-import type { AppSpec } from "../shared/spec.ts";
+import type { AppSpec } from "./spec.ts";
 
 const spec: AppSpec = {
   title: "Test",

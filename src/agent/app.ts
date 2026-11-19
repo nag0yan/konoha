@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z, ZodError } from "zod";
-import { appSpecSchema, type AppSpec } from "../shared/spec.ts";
+import { appSpecSchema, type AppSpec } from "./spec.ts";
 
 type Generator = (prompt: string, previous?: AppSpec) => Promise<AppSpec>;
 

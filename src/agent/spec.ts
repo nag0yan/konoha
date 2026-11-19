@@ -33,9 +33,6 @@ export const appSpecSchema = z.object({
 });
 
 export type AppSpec = z.infer<typeof appSpecSchema>;
-export type Entity = z.infer<typeof entitySchema>;
-
-export class RecordValidationError extends Error {}
 
 export function checkAdditiveChange(previous: AppSpec, next: AppSpec): void {
   for (const entity of previous.entities) {
@@ -50,23 +47,3 @@ export function checkAdditiveChange(previous: AppSpec, next: AppSpec): void {
   }
 }
 
-export function validateRecord(entity: Entity, values: unknown): Record<string, string | number | boolean | null> {
-  const object = z.record(z.string(), z.unknown()).parse(values);
-  const result: Record<string, string | number | boolean | null> = {};
-  for (const name of Object.keys(object)) {
-    if (!entity.fields.some((field) => field.name === name)) throw new RecordValidationError(`Unknown field: ${name}`);
-  }
-  for (const field of entity.fields) {
-    const value = object[field.name];
-    if (value === undefined || value === null || value === "") {
-      result[field.name] = null;
-    } else if (field.type === "text") {
-      result[field.name] = z.string().max(4000).parse(value);
-    } else if (field.type === "number") {
-      result[field.name] = z.number().finite().parse(value);
-    } else {
-      result[field.name] = z.boolean().parse(value);
-    }
-  }
-  return result;
-}

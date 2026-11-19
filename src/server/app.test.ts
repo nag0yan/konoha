@@ -4,16 +4,13 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Hono } from "hono";
 import app from "./app.ts";
-import { initialize, pool, quoteIdentifier, schemaName } from "./db.ts";
-import { appSpecSchema, checkAdditiveChange } from "../shared/spec.ts";
-import { runSource } from "./code-runner.ts";
+import { initialize, pool } from "./db.ts";
 import { createVmRoutes, stopVms } from "./vm-apps.ts";
 import type { AppFiles, RunningVm } from "./vm-runtime.ts";
 
-process.env.GENERATOR = "template";
 const suffix = randomUUID();
-const emails = [`owner-${suffix}@example.com`, `member-${suffix}@example.com`, `outside-${suffix}@example.com`];
-const appIds: string[] = [];
+const revisionEmails = [`owner-${suffix}@example.com`, `visitor-${suffix}@example.com`];
+const authEmail = `login-${suffix}@example.com`;
 
 async function request(path: string, method = "GET", data?: unknown, cookie?: string): Promise<Response> {
   return app.request(path, {
@@ -29,160 +26,36 @@ async function request(path: string, method = "GET", data?: unknown, cookie?: st
 
 before(async () => { await initialize(); });
 after(async () => {
-  for (const id of appIds) {
-    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(schemaName(id))} CASCADE`);
-    await pool.query("DELETE FROM apps WHERE id=$1", [id]);
-  }
-  await pool.query("DELETE FROM users WHERE email = ANY($1::text[])", [emails]);
+  await pool.query("DELETE FROM users WHERE email = ANY($1::text[])", [[authEmail, ...revisionEmails]]);
   await pool.end();
 });
 
-test("multi-user isolation, additive migration, and membership revocation", async () => {
-  const cookies: string[] = [];
-  for (const email of emails) {
-    const registration = await request("/api/register", "POST", { email, password: "example-password-123" });
-    assert.equal(registration.status, 201);
-    const login = await request("/api/login", "POST", { email, password: "example-password-123" });
-    assert.equal(login.status, 200);
-    const cookie = login.headers.get("set-cookie")?.split(";")[0];
-    assert.ok(cookie);
-    cookies.push(cookie);
-  }
-  const [owner, member, outsider] = cookies;
-  assert.ok(owner && member && outsider);
-  const unsupported = await request("/api/apps", "POST", { prompt: "品目を表にして、数量の合計を表示して", defaultVisibility: "private" }, owner);
-  assert.equal(unsupported.status, 422);
-  assert.match((await unsupported.json() as { error: string }).error, /「コード版」を選んで/);
-  const created = await request("/api/apps", "POST", { prompt: "予約管理", defaultVisibility: "private" }, owner);
-  assert.equal(created.status, 201);
-  const createdBody = await created.json() as { id: string };
-  const id = createdBody.id;
-  appIds.push(id);
-  const invite = await request(`/api/apps/${id}/members`, "POST", { email: emails[1] }, owner);
-  assert.equal(invite.status, 201);
-  assert.equal((await request(`/api/apps/${id}/members`, "POST", { email: emails[2] }, member)).status, 403);
-  const path = `/api/apps/${id}/records/reservations`;
-  const shared = await request(path, "POST", { values: { customer: "A", date: "2026-01-01" }, visibility: "shared" }, member);
-  const privateRecord = await request(path, "POST", { values: { customer: "B", date: "2026-01-02" }, visibility: "private" }, member);
-  assert.equal(shared.status, 201);
-  assert.equal(privateRecord.status, 201);
-  const ownerPrivate = await request(path, "POST", { values: { customer: "C" }, visibility: "private" }, owner);
-  assert.equal(ownerPrivate.status, 201);
-  const ownerPrivateId = ((await ownerPrivate.json()) as { id: string }).id;
-  const memberList = await request(path, "GET", undefined, member);
-  assert.deepEqual(((await memberList.json()) as { customer: string }[]).map((row) => row.customer).sort(), ["A", "B"]);
-  const ownerList = await request(path, "GET", undefined, owner);
-  assert.equal(((await ownerList.json()) as unknown[]).length, 3);
-  assert.equal((await request(path, "GET", undefined, outsider)).status, 403);
-  assert.equal((await request(`${path}/${ownerPrivateId}`, "DELETE", undefined, member)).status, 404);
-  assert.equal((await request(`${path}/${ownerPrivateId}`, "PATCH", { values: { customer: "stolen" }, visibility: "shared" }, member)).status, 404);
-  assert.equal((await request(`/api/apps/${id}/change`, "POST", { prompt: "メモを追加" }, member)).status, 403);
-  assert.equal((await request(`/api/apps/${id}/change`, "POST", { prompt: "予約にメモを追加" }, owner)).status, 200);
-  const afterChange = await request(path, "GET", undefined, member);
-  const rows = await afterChange.json() as { customer: string; note: string | null }[];
-  assert.equal(rows.length, 2);
-  assert.equal(rows.find((row) => row.customer === "A")?.note, null);
-  assert.equal((await request(path, "POST", { values: { customer: "D", note: "テスト" }, visibility: "shared" }, owner)).status, 201);
-  const calendarChange = await request(`/api/apps/${id}/change`, "POST", { prompt: "日付をカレンダーで入力できるようにして" }, owner);
-  assert.equal(calendarChange.status, 200);
-  const calendarSpec = appSpecSchema.parse(((await calendarChange.json()) as { spec: unknown }).spec);
-  const calendarFields = calendarSpec.entities.find((entity) => entity.name === "reservations")?.fields;
-  assert.deepEqual(calendarFields?.map((field) => field.name), ["customer", "date", "note"]);
-  assert.deepEqual(calendarFields?.find((field) => field.name === "date"), { name: "date", label: "日時", type: "text", widget: "date" });
-  const calendarRows = await (await request(path, "GET", undefined, member)).json() as { customer: string; date: string | null }[];
-  assert.equal(calendarRows.find((row) => row.customer === "A")?.date, "2026-01-01");
-  assert.equal((await request(path, "POST", { values: { customer: "E", date: "2026-11-20" }, visibility: "shared" }, owner)).status, 201);
-  const savedDates = await (await request(path, "GET", undefined, member)).json() as { customer: string; date: string | null }[];
-  assert.equal(savedDates.find((row) => row.customer === "E")?.date, "2026-11-20");
-  assert.equal((await request(path, "POST", { values: { unknown_field: "invalid" }, visibility: "shared" }, member)).status, 400);
-  const membersResponse = await request(`/api/apps/${id}/members`, "GET", undefined, owner);
-  const members = await membersResponse.json() as { id: string; role: string }[];
-  const memberId = members.find((item) => item.role === "member")?.id;
-  assert.ok(memberId);
-  assert.equal((await request(`/api/apps/${id}/members/${memberId}`, "DELETE", undefined, owner)).status, 200);
-  assert.equal((await request(path, "GET", undefined, member)).status, 403);
-  assert.equal((await app.request("/api/apps", { method: "POST" })).status, 403);
-});
-
-test("schema validation rejects destructive changes and unsafe identifiers", () => {
-  const before = appSpecSchema.parse({ title: "Test", entities: [{ name: "items", label: "Items", fields: [{ name: "name", label: "Name", type: "text" }] }] });
-  const after = appSpecSchema.parse({ title: "Test", entities: [{ name: "items", label: "Items", fields: [{ name: "name", label: "Name", type: "number" }] }] });
-  assert.throws(() => checkAdditiveChange(before, after));
-  assert.throws(() => appSpecSchema.parse({ title: "Bad", entities: [{ name: "x;drop", label: "X", fields: [{ name: "name", label: "Name", type: "text" }] }] }));
-});
-
-test("code sandbox supports unrelated application data shapes", {
-  skip: process.env.KONOHA_TEST_CODE !== "1",
-}, async () => {
-  const reservations = await runSource(`
-    export const handle = ({ slots = [], booked = [] }) => slots.filter(slot => !booked.includes(slot));
-    export const render = result => ({tag: "ul", children: result.map(slot => ({tag: "li", children: [slot]}))});
-  `, { slots: ["09:00", "10:00"], booked: ["09:00"] });
-  assert.deepEqual(reservations.result, ["10:00"]);
-  const inventory = await runSource(`
-    export const handle = ({ items = [] }) => ({ total: items.reduce((sum, item) => sum + item.quantity, 0) });
-    export const render = result => "total: " + result.total;
-  `, { items: [{ quantity: 3 }, { quantity: 1 }] });
-  assert.deepEqual(inventory, { result: { total: 4 }, view: "total: 4" });
-});
-
-test("code revisions require owner approval and keep the active release unchanged until approval", {
-  skip: process.env.KONOHA_TEST_CODE !== "1",
-}, async () => {
-  const cookies = [];
-  for (const email of emails.slice(0, 2)) {
-    const login = await request("/api/login", "POST", { email, password: "example-password-123" });
-    const cookie = login.headers.get("set-cookie")?.split(";")[0];
-    assert.ok(cookie);
-    cookies.push(cookie);
-  }
-  const [owner, member] = cookies;
-  process.env.KONOHA_CODE_MODE = "fixture";
-  try {
-    const requirement = { prompt: "<b>Inventory</b>", sample: "{}" };
-    assert.equal((await request("/api/code-apps", "POST", requirement)).status, 401);
-    const memberCreation = await request("/api/code-apps", "POST", { prompt: "Member's own app", sample: "{}" }, member);
-    assert.equal(memberCreation.status, 201);
-    appIds.push((await memberCreation.json() as { id: string }).id);
-    const created = await request("/api/code-apps", "POST", requirement, owner);
-    assert.equal(created.status, 201);
-    const { id, revision: first } = await created.json() as { id: string; revision: number };
-    appIds.push(id);
-    const apps = await (await request("/api/apps", "GET", undefined, owner)).json() as { id: string; spec: unknown }[];
-    assert.deepEqual(apps.find((item) => item.id === id)?.spec, { title: requirement.prompt, entities: [] });
-    const path = `/api/apps/${id}/code`;
-    const state = await (await request(path, "GET", undefined, owner)).json() as { draft: { revision: number }; active: number | null };
-    assert.equal(state.draft.revision, first);
-    assert.equal(state.active, null);
-    const invite = await request(`/api/apps/${id}/members`, "POST", { email: emails[1] }, owner);
-    assert.equal(invite.status, 201);
-    const make = async (prompt: string) => {
-      const response = await request(path, "POST", { prompt, sample: '{"items":[]}' }, owner);
-      assert.equal(response.status, 201, JSON.stringify(await response.clone().json()));
-      return (await response.json() as { revision: number }).revision;
-    };
-    assert.equal((await request(path, "POST", { prompt: "not allowed", sample: "{}" }, member)).status, 403);
-    assert.equal((await request(`${path}/preview/${first}`, "GET", undefined, member)).status, 403);
-    assert.equal((await request(`${path}/release`, "GET", undefined, member)).status, 404);
-    const preview = await request(`${path}/preview/${first}`, "GET", undefined, owner);
-    assert.match(preview.headers.get("content-security-policy") ?? "", /sandbox/);
-    assert.match(await preview.text(), /<h1>&lt;b&gt;Inventory&lt;\/b&gt;<\/h1>/);
-    assert.equal((await request(`${path}/${first}/approve`, "POST", {}, member)).status, 403);
-    assert.equal((await request(`${path}/${first}/approve`, "POST", {}, owner)).status, 200);
-    const second = await make("New revision");
-    const active = await request(`${path}/release?format=html`, "GET", undefined, member);
-    assert.match(await active.text(), /<h1>&lt;b&gt;Inventory/);
-    const result = await request(`${path}/release/run`, "POST", { sample: '{"services":[]}' }, member);
-    assert.deepEqual(await result.json(), { keys: ["services"] });
-    assert.equal((await request(`${path}/${second}/approve`, "POST", {}, owner)).status, 200);
-    assert.match(await (await request(`${path}/release?format=html`, "GET", undefined, member)).text(), /<h1>New revision<\/h1>/);
-  } finally {
-    delete process.env.KONOHA_CODE_MODE;
-  }
+test("authenticated users can access VM apps but not the retired API routes", async () => {
+  const password = "test-password-only";
+  assert.equal((await request("/api/register", "POST", { email: authEmail, password })).status, 201);
+  assert.equal((await request("/api/vm-apps")).status, 401);
+  const login = await request("/api/login", "POST", { email: authEmail, password });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get("set-cookie")?.split(";")[0];
+  assert.ok(cookie);
+  const me = await request("/api/me", "GET", undefined, cookie);
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).email, authEmail);
+  const apps = await request("/api/vm-apps", "GET", undefined, cookie);
+  assert.equal(apps.status, 200);
+  assert.deepEqual(await apps.json(), []);
+  assert.equal((await request("/api/apps", "GET", undefined, cookie)).status, 404);
+  assert.equal((await request("/api/code-apps", "POST", {}, cookie)).status, 404);
+  assert.equal((await request(`/api/apps/${randomUUID()}/code`, "GET", undefined, cookie)).status, 404);
+  assert.equal((await request("/api/logout", "POST", undefined, cookie)).status, 200);
+  assert.equal((await request("/api/vm-apps", "GET", undefined, cookie)).status, 401);
 });
 
 test("VM app edits keep the old version available until the candidate boots", async (t) => {
-  const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE email = ANY($1) ORDER BY email", [emails.slice(0, 2)]);
+  const { rows } = await pool.query<{ id: string }>(
+    "INSERT INTO users (id,email,password_hash) VALUES ($1,$2,''),($3,$4,'') RETURNING id",
+    [randomUUID(), revisionEmails[0], randomUUID(), revisionEmails[1]],
+  );
   const [owner, outsider] = rows;
   assert.ok(owner && outsider);
   const sample = (title: string): AppFiles => [{ path: "server.mjs", content: `console.log(${JSON.stringify(title)});` }];
